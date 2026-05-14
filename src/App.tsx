@@ -23,7 +23,8 @@ import {
   ChevronUp,
   ChevronDown,
   Info,
-  Download
+  Download,
+  Check
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -629,26 +630,58 @@ export default function App() {
 
                           <div className="flex items-start gap-3">
                             <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">C</div>
-                            <div>
-                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Langkah Kalkulasi</p>
-                              <div className="text-indigo-100 text-[10px] space-y-2">
+                            <div className="flex-1">
+                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-2">Penjabaran Kalkulasi f(x_{selectedIter.iteration})</p>
+                              <div className="text-indigo-100 text-[10px] space-y-4">
+                                {/* Tahap 1: Substitusi */}
                                 <div className="space-y-1">
-                                  <p>1. Menghitung nilai konstanta & fungsi dasar:</p>
-                                  {equation.includes('e') && (
-                                    <div className="pl-3 border-l border-white/10 text-slate-400">
-                                       e^{formatFullNumber(selectedIter.x1, 4)} ≈ {Math.exp(selectedIter.x1).toFixed(8)}
-                                    </div>
-                                  )}
-                                  {equation.includes('^') && !equation.includes('e^') && (
-                                    <div className="pl-3 border-l border-white/10 text-slate-400">
-                                       Menghitung perpangkatan variabel...
-                                    </div>
-                                  )}
+                                  <p className="text-indigo-400/80 font-bold">1. Substitusi Variabel:</p>
+                                  <div className="pl-3 py-2 bg-white/5 rounded border-l-2 border-indigo-500/30 font-mono text-[9px] break-all">
+                                    f({formatFullNumber(selectedIter.x1, precision)}) = {equation.replace(/\bx\b/g, `(${formatFullNumber(selectedIter.x1, precision)})`).replace(/\be\b/g, `(${CUSTOM_E})`)}
+                                  </div>
                                 </div>
-                                <p>2. Melakukan operasi perkalian dan pembagian sesuai aturan BODMAS...</p>
-                                <p>3. Melakukan operasi penjumlahan dan pengurangan...</p>
-                                <div className="mt-2 bg-indigo-500/5 p-2 rounded border border-indigo-500/10 italic text-indigo-300/80">
-                                  Proses Internal: Math.evaluate("{equation.replace(/\bx\b/g, formatFullNumber(selectedIter.x1, 10))}")
+
+                                {/* Tahap 2: Evaluasi Suku-suku */}
+                                <div className="space-y-2">
+                                  <p className="text-indigo-400/80 font-bold">2. Evaluasi Suku-Suku & Fungsi:</p>
+                                  <div className="grid grid-cols-1 gap-2 pl-3">
+                                    {equation.match(/e\^x/g) && (
+                                      <div className="flex justify-between items-center border-b border-white/5 pb-1">
+                                        <span className="text-slate-500">e^{formatFullNumber(selectedIter.x1, parseInt(precision))}</span>
+                                        <span className="text-indigo-200">{Math.exp(selectedIter.x1).toFixed(parseInt(precision) + 4)}</span>
+                                      </div>
+                                    )}
+                                    {/* Detect powers (x^2, x^3 etc) */}
+                                    {Array.from(equation.matchAll(/x\^(\d+)/g)).map((match, idx) => {
+                                      const p = parseInt(match[1]);
+                                      return (
+                                        <div key={idx} className="flex justify-between items-center border-b border-white/5 pb-1">
+                                          <span className="text-slate-500">({formatFullNumber(selectedIter.x1, parseInt(precision))})^{p}</span>
+                                          <span className="text-indigo-200">{Math.pow(selectedIter.x1, p).toFixed(parseInt(precision) + 4)}</span>
+                                        </div>
+                                      );
+                                    })}
+                                    {equation.match(/sin|cos|tan/g) && (
+                                      <div className="flex justify-between items-center border-b border-white/5 pb-1">
+                                        <span className="text-slate-500">Trigonometri (rad)</span>
+                                        <span className="text-indigo-200">Terhitung</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Tahap 3: Penyederhanaan Sesuai Operan */}
+                                <div className="space-y-1">
+                                  <p className="text-indigo-400/80 font-bold">3. Akumulasi Hasil Akhir:</p>
+                                  <div className="pl-3 text-slate-400 leading-relaxed italic">
+                                    Menjumlahkan seluruh suku yang telah dievaluasi dengan memperhatikan tanda (+, -, *, /)...
+                                  </div>
+                                  <div className="mt-2 p-2 bg-teal-500/10 rounded border border-teal-500/20">
+                                    <div className="flex justify-between items-baseline">
+                                      <span className="text-xs text-teal-400 font-bold">f(x_{selectedIter.iteration}) =</span>
+                                      <span className="text-sm font-mono text-teal-300 font-bold">{formatFullNumber(selectedIter.fx1, parseInt(precision))}</span>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -877,12 +910,18 @@ export default function App() {
                         key={idx} 
                         onClick={() => setSelectedIter(r)}
                         className={cn(
-                          "bg-transparent hover:bg-white/10 transition-all cursor-pointer group",
+                          "bg-transparent hover:bg-white/10 transition-all cursor-pointer group border-l-2 border-transparent",
                           selectedIter?.iteration === r.iteration && "bg-indigo-500/20 shadow-inner",
-                          idx === results.length - 1 && finalRoot !== null && selectedIter?.iteration !== r.iteration && "bg-indigo-500/10"
+                          idx === results.length - 1 && finalRoot !== null && selectedIter?.iteration !== r.iteration && "bg-indigo-500/10",
+                          r.iteration > 0 && r.error < parseFloat(tolerance) && "bg-teal-500/10 border-l-teal-500/50"
                         )}
                       >
-                        <td className="px-6 py-4 text-slate-500">{r.iteration}</td>
+                        <td className="px-6 py-4 text-slate-500 flex items-center gap-2">
+                          {r.iteration}
+                          {r.iteration > 0 && r.error < parseFloat(tolerance) && (
+                            <Check size={12} className="text-teal-400 stroke-[3]" />
+                          )}
+                        </td>
                         <td className="px-6 py-4 text-slate-100 font-medium">
                           {formatFullNumber(r.x1, parseInt(precision))}
                         </td>
