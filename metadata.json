@@ -1,0 +1,6 @@
+{
+  "name": "Secant Solver",
+  "description": "Kalkulator metode numerik menggunakan metode Secant dengan konstanta exp (e) yang dikustomisasi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
