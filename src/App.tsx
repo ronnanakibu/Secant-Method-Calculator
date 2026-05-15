@@ -80,12 +80,15 @@ const convertToExcel = (expr: string, cellRef: string = "A2") => {
 
 interface IterationResult {
   iteration: number;
-  x0: number;
-  x1: number;
-  fx0: number;
-  fx1: number;
-  xNext: number;
-  error: number;
+  x: number;
+  fx: number;
+  error: number | null;
+  // Metadata for detail view formulas
+  prevX?: number;
+  prevPrevX?: number;
+  prevFx?: number;
+  prevPrevFx?: number;
+  isInitial?: boolean;
 }
 
 export default function App() {
@@ -121,50 +124,195 @@ export default function App() {
     setBuilderFormula(prev => prev + term);
   };
   
-  // Custom Math evaluator with the user's specific e
-  const evaluateFunction = (expr: string, x: number) => {
-    try {
-      // 1. Pre-process the expression for better user experience
-      let cleanExpr = expr
-        .replace(/–|—/g, '-') // Replace en-dash/em-dash with standard minus
-        .replace(/=/g, '')     // Remove equal signs
-        .replace(/0/g, (match, offset) => {
-          // Only remove '0' if it's likely part of "= 0" at the end
-          return offset > expr.length - 3 ? '' : '0';
-        })
-        .trim();
+// Custom Math evaluator with the user's specific e
+const evaluateFunction = (expr: string, x: number, precision: string) => {
+  try {
+    let cleanExpr = expr
+      .replace(/–|—/g, '-') 
+      .replace(/=/g, '')     
+      .replace(/=\s*0\s*$/, '')
+      .trim();
 
-      // 2. Setup scope
-      const scope = { 
-        x, 
-        e: CUSTOM_E,
-        exp: (val: number) => Math.pow(CUSTOM_E, val) 
-      };
+    // Fix precedence for e^ terms: e^2x -> e^(2x)
+    cleanExpr = cleanExpr.replace(/e\^([-+.\w]+)/g, (match, p1) => {
+      if (p1.startsWith('(') && p1.endsWith(')')) return match;
+      return `e^(${p1})`;
+    });
 
-      // 3. Parse with implicit multiplication support if possible, or handle via regex
-      // Note: mathjs parse is quite strict by default.
-      // We'll help the user by inserting '*' between numbers and 'x' or '('
-      cleanExpr = cleanExpr.replace(/(\d)([a-zA-Z(])/g, '$1*$2');
-      
-      const node = math.parse(cleanExpr);
-      const code = node.compile();
-      let result = code.evaluate(scope);
-      
-      if (typeof result !== 'number' || !isFinite(result)) {
-        throw new Error("Hasil bukan angka valid.");
-      }
+    const scope = { 
+      x, 
+      e: CUSTOM_E,
+      exp: (val: number) => Math.pow(CUSTOM_E, val) 
+    };
 
-      // Scientific Rounding
-      const p = parseInt(precision);
-      if (!isNaN(p)) {
-        result = Number(result.toFixed(p));
-      }
-
-      return result;
-    } catch (err: any) {
-      throw new Error(`Persamaan tidak valid: ${err.message || 'Cek penulisan formula.'}`);
+    cleanExpr = cleanExpr.replace(/(\d)([a-zA-Z(])/g, '$1*$2');
+    
+    const node = math.parse(cleanExpr);
+    const code = node.compile();
+    let result = code.evaluate(scope);
+    
+    if (typeof result !== 'number' || !isFinite(result)) {
+      throw new Error("Hasil bukan angka valid.");
     }
-  };
+
+    const p = parseInt(precision);
+    if (!isNaN(p)) {
+      result = Number(result.toFixed(p));
+    }
+
+    return result;
+  } catch (err: any) {
+    throw new Error(`Persamaan tidak valid: ${err.message || 'Cek penulisan formula.'}`);
+  }
+};
+
+const DetailEvaluation = ({ selectedIter, equation, precision, CUSTOM_E }: { selectedIter: IterationResult, equation: string, precision: string, CUSTOM_E: number }) => (
+  <div className="border-t border-indigo-500/20 pt-6 mt-4">
+    <div className="flex items-center gap-2 mb-3">
+      <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full"></div>
+      <span className="text-indigo-300 font-bold text-[10px] uppercase tracking-widest">Detail Evaluasi Fungsi f(x_{selectedIter.iteration})</span>
+    </div>
+    
+    <div className="space-y-4 bg-slate-900/50 p-4 rounded-xl border border-indigo-500/10">
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">A</div>
+          <div>
+            <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Persamaan Asli</p>
+            <code className="text-indigo-200">f(x) = {equation}</code>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">B</div>
+          <div>
+            <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Substitusi x = {formatFullNumber(selectedIter.x, parseInt(precision))}</p>
+            <code className="text-indigo-200 break-all leading-relaxed whitespace-pre-wrap">
+              f({formatFullNumber(selectedIter.x, parseInt(precision))}) = {equation.replace(/(?<![a-zA-Z])x/g, `(${formatFullNumber(selectedIter.x, parseInt(precision))})`).replace(/\be\b/g, `(${CUSTOM_E})`)}
+            </code>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">C</div>
+          <div className="flex-1">
+            <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-2">Evaluasi Suku-Suku & Fungsi:</p>
+            <div className="text-indigo-100 text-[10px] space-y-4">
+              <div className="grid grid-cols-1 gap-2">
+                {Array.from(equation.matchAll(/(?:^|(?<=[^a-zA-Z0-9^]))([+-]?\d*(?:\.\d+)?)?\*?\s*e\^([-+()\d.*]*x)/g)).map((match, idx) => {
+                  const rawCoeff = match[1] || "";
+                  const coeff = rawCoeff === "" || rawCoeff === "+" ? "1" : (rawCoeff === "-" ? "-1" : rawCoeff);
+                  const exponent = match[2];
+                  const substitutedExponent = exponent.replace(/(?<![a-zA-Z])x/g, `(${formatFullNumber(selectedIter.x, parseInt(precision))})`);
+                  let val = 0;
+                  try {
+                    val = evaluateFunction(`${coeff} * e^(${exponent})`, selectedIter.x, precision);
+                  } catch (err) {
+                    val = parseFloat(coeff) * Math.exp(selectedIter.x);
+                  }
+                  return (
+                    <div key={`exp-${idx}`} className="flex justify-between items-center border-b border-white/5 pb-1 italic">
+                      <span className="text-slate-500 font-mono">
+                        {coeff !== "1" && coeff !== "-1" ? `${coeff}*` : (coeff === "-1" ? "-" : "")}e^{substitutedExponent}
+                      </span>
+                      <span className="text-indigo-200">{val.toFixed(parseInt(precision) + 4)}</span>
+                    </div>
+                  );
+                })}
+                {Array.from(equation.matchAll(/(?:^|(?<=[^a-zA-Z0-9^]))([+-]?\d*(?:\.\d+)?)?\*?\s*x\^(\d+)/g)).map((match, idx) => {
+                  const rawCoeff = match[1] || "";
+                  const coeff = rawCoeff === "" || rawCoeff === "+" ? "1" : (rawCoeff === "-" ? "-1" : rawCoeff);
+                  const p = parseInt(match[2]);
+                  const termValue = parseFloat(coeff) * Math.pow(selectedIter.x, p);
+                  return (
+                    <div key={`pwr-${idx}`} className="flex justify-between items-center border-b border-white/5 pb-1 italic">
+                      <span className="text-slate-500 font-mono">
+                        {coeff !== "1" && coeff !== "-1" ? `${coeff}*` : (coeff === "-1" ? "-" : "")}({formatFullNumber(selectedIter.x, parseInt(precision))})^{p}
+                      </span>
+                      <span className="text-indigo-200">{termValue.toFixed(parseInt(precision) + 4)}</span>
+                    </div>
+                  );
+                })}
+                {Array.from(equation.matchAll(/(?:^|(?<=[^a-zA-Z0-9^]))([+-]?\d*(?:\.\d+)?)?\*?\s*x\b(?!\^)/g)).map((match, idx) => {
+                  const rawCoeff = match[1] || "";
+                  const coeff = rawCoeff === "" || rawCoeff === "+" ? "1" : (rawCoeff === "-" ? "-1" : rawCoeff);
+                  const termValue = parseFloat(coeff) * selectedIter.x;
+                  return (
+                    <div key={`lin-${idx}`} className="flex justify-between items-center border-b border-white/5 pb-1 italic">
+                      <span className="text-slate-500 font-mono">
+                        {coeff !== "1" && coeff !== "-1" ? `${coeff}*` : (coeff === "-1" ? "-" : "")}({formatFullNumber(selectedIter.x, parseInt(precision))})
+                      </span>
+                      <span className="text-indigo-200">{termValue.toFixed(parseInt(precision) + 4)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-2 p-2 bg-teal-500/10 rounded border border-teal-500/20">
+                <div className="flex justify-between items-baseline">
+                  <span className="text-xs text-teal-400 font-bold uppercase tracking-tighter">f(x_{selectedIter.iteration}) =</span>
+                  <span className="text-sm font-mono text-teal-300 font-bold">{formatFullNumber(selectedIter.fx, parseInt(precision))}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const DetailError = ({ selectedIter, precision, tolerance }: { selectedIter: IterationResult, precision: string, tolerance: string }) => (
+  <div className="flex items-start gap-3 mt-4">
+    <div className="w-5 h-5 rounded bg-pink-500/20 flex items-center justify-center text-[10px] text-pink-300 shrink-0 mt-0.5">E</div>
+    <div className="flex-1">
+      <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-2">Penjabaran Error |x_{selectedIter.iteration} - x_{selectedIter.iteration-1}|</p>
+      <div className="text-pink-100 text-[10px] space-y-4">
+        <div className="space-y-1">
+          <p className="text-pink-400/80 font-bold uppercase tracking-tighter text-[9px]">1. Rumus & Substitusi:</p>
+          <div className="pl-3 py-1 bg-white/5 rounded border-l-2 border-pink-500/30 font-mono">
+            ε = |{formatFullNumber(selectedIter.x, parseInt(precision))} - {formatFullNumber(selectedIter.prevX || 0, parseInt(precision))}|
+          </div>
+        </div>
+        <div className="mt-2 p-2 bg-pink-500/10 rounded border border-pink-500/20">
+          <div className="flex justify-between items-baseline">
+            <span className="text-xs text-pink-400 font-bold">Error (ε) =</span>
+            <span className="text-sm font-mono text-pink-300 font-bold">{formatFullNumber(selectedIter.error || 0, parseInt(precision))}</span>
+          </div>
+        </div>
+        {selectedIter.error !== null && selectedIter.error < parseFloat(tolerance) && (
+          <div className="text-[9px] text-teal-400 mt-1 italic flex items-center gap-1">
+            <Check size={10} /> Konvergensi Tercapai (ε &lt; {tolerance})
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+);
+
+const DetailNextRoot = ({ selectedIter, precision }: { selectedIter: IterationResult, precision: string }) => {
+  const nextXRaw = (selectedIter.fx * ((selectedIter.x) - (selectedIter.prevX || 0))) / ((selectedIter.fx) - (selectedIter.prevFx || 0));
+  const nextX = (selectedIter.x) - nextXRaw;
+  
+  return (
+    <div className="flex items-start gap-3 mt-4">
+      <div className="w-5 h-5 rounded bg-blue-500/20 flex items-center justify-center text-[10px] text-blue-300 shrink-0 mt-0.5">F</div>
+      <div className="flex-1">
+        <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-2">Akar Estimasi Berikutnya (x_{selectedIter.iteration + 1})</p>
+        <div className="text-blue-100 text-[10px] space-y-3">
+          <div className="pl-3 py-1 bg-white/5 rounded border-l-2 border-blue-500/30 font-mono text-[9px] break-all leading-relaxed">
+            x_{selectedIter.iteration+1} = {formatFullNumber(selectedIter.x, parseInt(precision))} - [ {formatFullNumber(selectedIter.fx, parseInt(precision))} * ({formatFullNumber(selectedIter.x, parseInt(precision))} - {formatFullNumber(selectedIter.prevX || 0, parseInt(precision))}) ] / [ {formatFullNumber(selectedIter.fx, parseInt(precision))} - {formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))} ]
+          </div>
+          <div className="mt-1 p-2 bg-blue-500/10 rounded border border-blue-500/20">
+            <div className="flex justify-between items-baseline">
+              <span className="text-xs text-blue-400 font-bold">Next x =</span>
+              <span className="text-sm font-mono text-blue-300 font-bold">{formatFullNumber(nextX, parseInt(precision))}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
   const calculateSecant = () => {
     setErrorStatus(null);
@@ -175,6 +323,7 @@ export default function App() {
     const tol = parseFloat(tolerance);
     const maxI = parseInt(maxIterations);
     const precValue = parseInt(precision);
+    // Use raw values for initial guesses
     let curX0 = parseFloat(x0);
     let curX1 = parseFloat(x1);
 
@@ -208,65 +357,58 @@ export default function App() {
       return;
     }
 
-    // Round initial guesses
-    curX0 = Number(curX0.toFixed(precValue));
-    curX1 = Number(curX1.toFixed(precValue));
-
     const iterativeResults: IterationResult[] = [];
 
     try {
       // Step 0: Initial guess x0
-      const fx0 = evaluateFunction(equation, curX0);
+      const fx0 = evaluateFunction(equation, curX0, precision);
       iterativeResults.push({
         iteration: 0,
-        x0: curX0,
-        x1: curX0,
-        fx0: fx0,
-        fx1: fx0,
-        xNext: curX0,
-        error: 0
+        x: curX0,
+        fx: fx0,
+        error: null,
+        isInitial: true
       });
 
       // Step 1: Initial guess x1
-      const fx1 = evaluateFunction(equation, curX1);
-      const err1 = Math.abs(curX1 - curX0);
+      const fx1 = evaluateFunction(equation, curX1, precision);
       iterativeResults.push({
         iteration: 1,
-        x0: curX0,
-        x1: curX1,
-        fx0: fx0,
-        fx1: fx1,
-        xNext: curX1,
-        error: Number(err1.toFixed(precValue + 4))
+        x: curX1,
+        fx: fx1,
+        error: Math.abs(curX1 - curX0),
+        prevX: curX0,
+        prevFx: fx0,
+        isInitial: true
       });
 
-      let rMinus2 = curX0;
-      let fRMinus2 = fx0;
-      let rMinus1 = curX1;
-      let fRMinus1 = fx1;
+      let r_m2 = curX0;
+      let f_m2 = fx0;
+      let r_m1 = curX1;
+      let f_m1 = fx1;
 
       // Start calculation for r=2, 3, ...
       for (let i = 2; i <= maxI; i++) {
-        const denominator = fRMinus1 - fRMinus2;
+        const denominator = f_m1 - f_m2;
         if (Math.abs(denominator) < 1e-20) {
           setErrorStatus("Pembagi nol. Metode Secant gagal.");
           break;
         }
 
-        let nextX = rMinus1 - (fRMinus1 * (rMinus1 - rMinus2)) / denominator;
-        nextX = Number(nextX.toFixed(precValue));
-
-        const fxNext = evaluateFunction(equation, nextX);
-        const currentError = Math.abs(nextX - rMinus1);
+        const nextX = r_m1 - (f_m1 * (r_m1 - r_m2)) / denominator;
+        const fxNext = evaluateFunction(equation, nextX, precision);
+        const currentError = Math.abs(nextX - r_m1);
 
         iterativeResults.push({
           iteration: i,
-          x0: rMinus1, // x_{r}
-          x1: nextX,   // x_{r+1}
-          fx0: fRMinus1, // f(x_{r})
-          fx1: fxNext,   // f(x_{r+1})
-          xNext: nextX,
-          error: Number(currentError.toFixed(precValue + 4))
+          x: nextX,
+          fx: fxNext,
+          error: currentError,
+          prevX: r_m1,
+          prevPrevX: r_m2,
+          prevFx: f_m1,
+          prevPrevFx: f_m2,
+          isInitial: false
         });
 
         if (currentError < tol) {
@@ -275,10 +417,10 @@ export default function App() {
         }
 
         // Update for next iteration
-        rMinus2 = rMinus1;
-        fRMinus2 = fRMinus1;
-        rMinus1 = nextX;
-        fRMinus1 = fxNext;
+        r_m2 = r_m1;
+        f_m2 = f_m1;
+        r_m1 = nextX;
+        f_m1 = fxNext;
       }
 
       setResults(iterativeResults);
@@ -293,18 +435,14 @@ export default function App() {
   const exportToExcel = () => {
     if (results.length === 0) return;
 
-    const data = results.map((r, idx) => {
+    const data = results.map((r) => {
       return {
-        "Iterasi (i)": r.iteration,
-        "x i-1": r.x0,
-        "x i": r.x1,
-        "f(x i)": r.fx1,
-        "x i+1 (Result)": r.xNext,
-        "Error Absolut": r.error,
-        "Excel Formula": convertToExcel(equation, "C" + (idx + 2)),
-        "Substitution Detail": r.iteration < 2 
-          ? "Initial" 
-          : `x${r.iteration} = ${results[r.iteration-1].x1} - [${results[r.iteration-1].fx1} * (${results[r.iteration-1].x1} - ${results[r.iteration-2].x1})] / [${results[r.iteration-1].fx1} - ${results[r.iteration-2].fx1}]`
+        "Iterasi (r)": r.iteration,
+        "x r": r.x,
+        "f(x r)": r.fx,
+        "Error Absolut": r.error === null ? "-" : r.error,
+        "Excel Formula": convertToExcel(equation, "B" + (r.iteration + 2)),
+        "Status": r.isInitial ? "Initial Guess" : "Calculated Root"
       };
     });
 
@@ -332,20 +470,20 @@ export default function App() {
       const data = [];
       try {
         for (let x = start; x <= end; x += (end - start) / 50) {
-          data.push({ x, y: evaluateFunction(equation, x) });
+          data.push({ x, y: evaluateFunction(equation, x, precision) });
         }
       } catch {}
       return data;
     }
 
     // Range around the results
-    const allX = results.flatMap(r => [r.x0, r.x1, r.xNext]);
+    const allX = results.map(r => r.x);
     const start = Math.min(...allX) - 1;
     const end = Math.max(...allX) + 1;
     const data = [];
     try {
       for (let x = start; x <= end; x += (end - start) / 50) {
-        data.push({ x, y: evaluateFunction(equation, x) });
+        data.push({ x, y: evaluateFunction(equation, x, precision) });
       }
     } catch {}
     return data;
@@ -503,16 +641,16 @@ export default function App() {
               <div className="flex items-center justify-between mb-4 border-b border-indigo-500/10 pb-3">
                 <div className="flex items-center gap-2">
                   <Calculator size={16} className="text-indigo-400" />
-                  <h2 className="text-sm font-semibold text-indigo-100 uppercase tracking-tighter">Detail Perhitungan Iterasi {selectedIter.iteration}</h2>
+                  <h2 className="text-sm font-semibold text-indigo-100 uppercase tracking-tighter">Detail Perhitungan r = {selectedIter.iteration}</h2>
                 </div>
                 <div className="flex gap-1">
                   <button 
                     onClick={() => {
-                      const text = `Iterasi ${selectedIter.iteration}\n` +
-                                   `x_${selectedIter.iteration-1} = ${results[selectedIter.iteration-1].x1}\n` +
-                                   `x_${selectedIter.iteration-2} = ${results[selectedIter.iteration-2]?.x1 || 'N/A'}\n` +
-                                   `f(x_${selectedIter.iteration-1}) = ${results[selectedIter.iteration-1].fx1}\n` +
-                                   `Hasil Akhir: x_${selectedIter.iteration} = ${selectedIter.xNext}`;
+                      const text = `Iterasi r = ${selectedIter.iteration}\n` +
+                                   `x_r = ${selectedIter.x}\n` +
+                                   `f(x_r) = ${selectedIter.fx}\n` +
+                                   (selectedIter.error !== null ? `Error = ${selectedIter.error}\n` : '') +
+                                   `Jenis: ${selectedIter.isInitial ? 'Tebakan Awal' : 'Akar Terkalkulasi'}`;
                       navigator.clipboard.writeText(text);
                     }}
                     className="p-1 px-2 rounded bg-teal-500/10 border border-teal-500/20 text-teal-300 hover:bg-teal-500/20 transition-all text-[9px] font-bold mr-2 uppercase"
@@ -536,38 +674,69 @@ export default function App() {
                 </div>
               </div>
               
-              {selectedIter.iteration < 2 ? (
-                <div className="text-xs text-slate-400 italic font-mono space-y-2">
-                  <p>Iterasi inisialisasi (Tebakan Awal):</p>
-                  <div className="bg-slate-900/40 p-4 rounded-xl border border-white/5">
-                    <p className="text-indigo-200">x_{selectedIter.iteration} = {formatFullNumber(selectedIter.x1, parseInt(precision))}</p>
-                    <p className="text-slate-500 mt-1">f(x_{selectedIter.iteration}) = {formatFullNumber(selectedIter.fx1, parseInt(precision))}</p>
+              {selectedIter.iteration === 0 ? (
+                <div className="space-y-6">
+                  {/* Step 0: Evaluation only */}
+                  <div className="bg-slate-900/40 p-4 rounded-xl border border-white/5 font-mono text-[11px]">
+                    <p className="text-indigo-400 font-bold uppercase tracking-widest text-[9px] mb-2">Tahap Inisialisasi: Tebakan Pertama</p>
+                    <p className="text-indigo-200">x₀ = {formatFullNumber(selectedIter.x, parseInt(precision))}</p>
+                    <p className="text-slate-500 mt-1 italic">Mengevaluasi fungsi pada titik awal x₀...</p>
                   </div>
+                  <DetailEvaluation 
+                    selectedIter={selectedIter} 
+                    equation={equation} 
+                    precision={precision} 
+                    CUSTOM_E={CUSTOM_E} 
+                  />
+                </div>
+              ) : selectedIter.iteration === 1 ? (
+                <div className="space-y-6">
+                  {/* Step 1: Evaluation + Error */}
+                  <div className="bg-slate-900/40 p-4 rounded-xl border border-white/5 font-mono text-[11px]">
+                    <p className="text-indigo-400 font-bold uppercase tracking-widest text-[9px] mb-2">Tahap Inisialisasi: Tebakan Kedua</p>
+                    <p className="text-indigo-200">x₁ = {formatFullNumber(selectedIter.x, parseInt(precision))}</p>
+                    <p className="text-slate-500 mt-1 italic">Mengevaluasi fungsi pada titik awal x₁...</p>
+                  </div>
+                  <DetailEvaluation 
+                    selectedIter={selectedIter} 
+                    equation={equation} 
+                    precision={precision} 
+                    CUSTOM_E={CUSTOM_E} 
+                  />
+                  <DetailError 
+                    selectedIter={selectedIter} 
+                    precision={precision} 
+                    tolerance={tolerance} 
+                  />
+                  <DetailNextRoot 
+                    selectedIter={selectedIter} 
+                    precision={precision} 
+                  />
                 </div>
               ) : (
                 <div className="space-y-4 font-mono text-[11px]">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                     <div className="bg-slate-900/40 p-3 rounded-lg border border-white/5">
                       <div className="text-[9px] text-slate-500 uppercase mb-1">Input Sebelumnya</div>
-                      <p>x_{selectedIter.iteration-2} = {formatFullNumber(results[selectedIter.iteration-2].x1, parseInt(precision))}</p>
-                      <p>x_{selectedIter.iteration-1} = {formatFullNumber(results[selectedIter.iteration-1].x1, parseInt(precision))}</p>
+                      <p>x_{selectedIter.iteration-2} = {formatFullNumber(selectedIter.prevPrevX || 0, parseInt(precision))}</p>
+                      <p>x_{selectedIter.iteration-1} = {formatFullNumber(selectedIter.prevX || 0, parseInt(precision))}</p>
                     </div>
                     <div className="bg-slate-900/40 p-3 rounded-lg border border-white/5">
                       <div className="text-[9px] text-slate-500 uppercase mb-1">Fungsi Sebelumnya</div>
-                      <p>f(x_{selectedIter.iteration-2}) = {formatFullNumber(results[selectedIter.iteration-2].fx1, parseInt(precision))}</p>
-                      <p>f(x_{selectedIter.iteration-1}) = {formatFullNumber(results[selectedIter.iteration-1].fx1, parseInt(precision))}</p>
+                      <p>f(x_{selectedIter.iteration-2}) = {formatFullNumber(selectedIter.prevPrevFx || 0, parseInt(precision))}</p>
+                      <p>f(x_{selectedIter.iteration-1}) = {formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))}</p>
                     </div>
                   </div>
                   <div className="space-y-3 bg-slate-900/30 p-4 rounded-xl border border-white/5 leading-relaxed overflow-x-auto">
                     <div className="border-l-2 border-indigo-500/30 pl-4 py-1">
-                      <span className="text-slate-500 text-[10px] uppercase tracking-wider block mb-1">1. Rumus Secant</span>
+                      <span className="text-slate-500 text-[10px] uppercase tracking-wider block mb-1">1. Rumus Secant untuk x_{selectedIter.iteration}</span>
                       <div className="text-indigo-300 font-bold">x_{selectedIter.iteration} = x_{selectedIter.iteration-1} - [f(x_{selectedIter.iteration-1}) · (x_{selectedIter.iteration-1} - x_{selectedIter.iteration-2})] / [f(x_{selectedIter.iteration-1}) - f(x_{selectedIter.iteration-2})]</div>
                     </div>
                     
                     <div className="border-l-2 border-slate-700 pl-4 py-1">
                       <span className="text-slate-500 text-[10px] uppercase tracking-wider block mb-1">2. Substitusi Nilai</span>
                       <div className="text-indigo-100 text-[10px] whitespace-pre-wrap break-all">
-                        x_{selectedIter.iteration} = {formatFullNumber(results[selectedIter.iteration-1].x1, parseInt(precision))} - [{formatFullNumber(results[selectedIter.iteration-1].fx1, parseInt(precision))} · ({formatFullNumber(results[selectedIter.iteration-1].x1, parseInt(precision))} - {formatFullNumber(results[selectedIter.iteration-2].x1, parseInt(precision))})] / [{formatFullNumber(results[selectedIter.iteration-1].fx1, parseInt(precision))} - {formatFullNumber(results[selectedIter.iteration-2].fx1, parseInt(precision))}]
+                        x_{selectedIter.iteration} = {formatFullNumber(selectedIter.prevX || 0, parseInt(precision))} - [{formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))} · ({formatFullNumber(selectedIter.prevX || 0, parseInt(precision))} - {formatFullNumber(selectedIter.prevPrevX || 0, parseInt(precision))})] / [{formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))} - {formatFullNumber(selectedIter.prevPrevFx || 0, parseInt(precision))}]
                       </div>
                     </div>
 
@@ -575,133 +744,52 @@ export default function App() {
                       <div className="bg-slate-900/40 p-2 rounded border border-white/5">
                         <span className="text-[9px] text-slate-500 uppercase block mb-1">3. Hitung Pembilang (Numerator)</span>
                         <p className="text-indigo-200">
-                          {formatFullNumber(results[selectedIter.iteration-1].fx1, parseInt(precision))} · {formatFullNumber(results[selectedIter.iteration-1].x1 - results[selectedIter.iteration-2].x1, parseInt(precision))} = <span className="text-indigo-400 font-bold">{formatFullNumber(results[selectedIter.iteration-1].fx1 * (results[selectedIter.iteration-1].x1 - results[selectedIter.iteration-2].x1), parseInt(precision))}</span>
+                          {formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))} · {formatFullNumber((selectedIter.prevX || 0) - (selectedIter.prevPrevX || 0), parseInt(precision))} = <span className="text-indigo-400 font-bold">{formatFullNumber((selectedIter.prevFx || 0) * ((selectedIter.prevX || 0) - (selectedIter.prevPrevX || 0)), parseInt(precision))}</span>
                         </p>
                       </div>
                       
                       <div className="bg-slate-900/40 p-2 rounded border border-white/5">
                         <span className="text-[9px] text-slate-500 uppercase block mb-1">4. Hitung Penyebut (Denominator)</span>
                         <p className="text-indigo-200">
-                          {formatFullNumber(results[selectedIter.iteration-1].fx1, parseInt(precision))} - {formatFullNumber(results[selectedIter.iteration-2].fx1, parseInt(precision))} = <span className="text-indigo-400 font-bold">{formatFullNumber(results[selectedIter.iteration-1].fx1 - results[selectedIter.iteration-2].fx1, parseInt(precision))}</span>
+                          {formatFullNumber(selectedIter.prevFx || 0, parseInt(precision))} - {formatFullNumber(selectedIter.prevPrevFx || 0, parseInt(precision))} = <span className="text-indigo-400 font-bold">{formatFullNumber((selectedIter.prevFx || 0) - (selectedIter.prevPrevFx || 0), parseInt(precision))}</span>
                         </p>
                       </div>
 
                       <div className="bg-indigo-500/10 p-2 rounded border border-indigo-500/20">
-                        <span className="text-[9px] text-indigo-400 uppercase block mb-1">5. Hasil Bagi (Correction Term)</span>
+                        <span className="text-[9px] text-indigo-400 uppercase block mb-1">5. Faktor Koreksi (Correction Term)</span>
                         <p className="text-teal-300">
-                          {formatFullNumber(results[selectedIter.iteration-1].fx1 * (results[selectedIter.iteration-1].x1 - results[selectedIter.iteration-2].x1), parseInt(precision))} / {formatFullNumber(results[selectedIter.iteration-1].fx1 - results[selectedIter.iteration-2].fx1, parseInt(precision))} = <span className="font-bold underline">{formatFullNumber((results[selectedIter.iteration-1].fx1 * (results[selectedIter.iteration-1].x1 - results[selectedIter.iteration-2].x1)) / (results[selectedIter.iteration-1].fx1 - results[selectedIter.iteration-2].fx1), parseInt(precision))}</span>
+                          {formatFullNumber((selectedIter.prevFx || 0) * ((selectedIter.prevX || 0) - (selectedIter.prevPrevX || 0)), parseInt(precision))} / {formatFullNumber((selectedIter.prevFx || 0) - (selectedIter.prevPrevFx || 0), parseInt(precision))} = <span className="font-bold underline">{formatFullNumber(((selectedIter.prevFx || 0) * ((selectedIter.prevX || 0) - (selectedIter.prevPrevX || 0))) / ((selectedIter.prevFx || 0) - (selectedIter.prevPrevFx || 0)), parseInt(precision))}</span>
                         </p>
                       </div>
                     </div>
 
                     <div className="border-t-2 border-teal-500/40 pt-3 flex flex-col gap-2">
-                      <span className="text-teal-400 font-bold text-[10px] uppercase tracking-widest">6. Hasil Akhir x_{selectedIter.iteration}</span>
+                      <span className="text-teal-400 font-bold text-[10px] uppercase tracking-widest">6. Hasil Akar x_{selectedIter.iteration}</span>
                       <div className="text-teal-400 font-mono text-xs pl-2 bg-teal-500/5 p-2 rounded-lg">
-                        x_{selectedIter.iteration} = {formatFullNumber(results[selectedIter.iteration-1].x1, parseInt(precision))} - {formatFullNumber((results[selectedIter.iteration-1].fx1 * (results[selectedIter.iteration-1].x1 - results[selectedIter.iteration-2].x1)) / (results[selectedIter.iteration-1].fx1 - results[selectedIter.iteration-2].fx1), parseInt(precision))}
-                        <p className="mt-1 text-sm font-bold">x_{selectedIter.iteration} = {formatFullNumber(selectedIter.xNext, parseInt(precision))}</p>
+                        x_{selectedIter.iteration} = {formatFullNumber(selectedIter.prevX || 0, parseInt(precision))} - {formatFullNumber(((selectedIter.prevFx || 0) * ((selectedIter.prevX || 0) - (selectedIter.prevPrevX || 0))) / ((selectedIter.prevFx || 0) - (selectedIter.prevPrevFx || 0)), parseInt(precision))}
+                        <p className="mt-1 text-sm font-bold">x_{selectedIter.iteration} = {formatFullNumber(selectedIter.x, parseInt(precision))}</p>
                       </div>
                     </div>
 
-                    <div className="border-t border-indigo-500/20 pt-6 mt-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full"></div>
-                        <span className="text-indigo-300 font-bold text-[10px] uppercase tracking-widest">Detail Evaluasi Fungsi f(x_{selectedIter.iteration})</span>
-                      </div>
-                      
-                      <div className="space-y-4 bg-slate-900/50 p-4 rounded-xl border border-indigo-500/10">
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-start gap-3">
-                            <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">A</div>
-                            <div>
-                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Persamaan Asli</p>
-                              <code className="text-indigo-200">f(x) = {equation}</code>
-                            </div>
-                          </div>
+                    <DetailEvaluation 
+                      selectedIter={selectedIter} 
+                      equation={equation} 
+                      precision={precision} 
+                      CUSTOM_E={CUSTOM_E} 
+                    />
+                    
+                    <DetailError 
+                      selectedIter={selectedIter} 
+                      precision={precision} 
+                      tolerance={tolerance} 
+                    />
 
-                          <div className="flex items-start gap-3">
-                            <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">B</div>
-                            <div>
-                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Substitusi x = {formatFullNumber(selectedIter.x1, parseInt(precision))}</p>
-                              <code className="text-indigo-200 break-all leading-relaxed whitespace-pre-wrap">
-                                f({formatFullNumber(selectedIter.x1, parseInt(precision))}) = {equation.replace(/\bx\b/g, `(${formatFullNumber(selectedIter.x1, parseInt(precision))})`).replace(/\be\b/g, `(${CUSTOM_E})`)}
-                              </code>
-                            </div>
-                          </div>
-
-                          <div className="flex items-start gap-3">
-                            <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">C</div>
-                            <div className="flex-1">
-                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-2">Penjabaran Kalkulasi f(x_{selectedIter.iteration})</p>
-                              <div className="text-indigo-100 text-[10px] space-y-4">
-                                {/* Tahap 1: Substitusi */}
-                                <div className="space-y-1">
-                                  <p className="text-indigo-400/80 font-bold">1. Substitusi Variabel:</p>
-                                  <div className="pl-3 py-2 bg-white/5 rounded border-l-2 border-indigo-500/30 font-mono text-[9px] break-all">
-                                    f({formatFullNumber(selectedIter.x1, precision)}) = {equation.replace(/\bx\b/g, `(${formatFullNumber(selectedIter.x1, precision)})`).replace(/\be\b/g, `(${CUSTOM_E})`)}
-                                  </div>
-                                </div>
-
-                                {/* Tahap 2: Evaluasi Suku-suku */}
-                                <div className="space-y-2">
-                                  <p className="text-indigo-400/80 font-bold">2. Evaluasi Suku-Suku & Fungsi:</p>
-                                  <div className="grid grid-cols-1 gap-2 pl-3">
-                                    {equation.match(/e\^x/g) && (
-                                      <div className="flex justify-between items-center border-b border-white/5 pb-1">
-                                        <span className="text-slate-500">e^{formatFullNumber(selectedIter.x1, parseInt(precision))}</span>
-                                        <span className="text-indigo-200">{Math.exp(selectedIter.x1).toFixed(parseInt(precision) + 4)}</span>
-                                      </div>
-                                    )}
-                                    {/* Detect powers (x^2, x^3 etc) */}
-                                    {Array.from(equation.matchAll(/x\^(\d+)/g)).map((match, idx) => {
-                                      const p = parseInt(match[1]);
-                                      return (
-                                        <div key={idx} className="flex justify-between items-center border-b border-white/5 pb-1">
-                                          <span className="text-slate-500">({formatFullNumber(selectedIter.x1, parseInt(precision))})^{p}</span>
-                                          <span className="text-indigo-200">{Math.pow(selectedIter.x1, p).toFixed(parseInt(precision) + 4)}</span>
-                                        </div>
-                                      );
-                                    })}
-                                    {equation.match(/sin|cos|tan/g) && (
-                                      <div className="flex justify-between items-center border-b border-white/5 pb-1">
-                                        <span className="text-slate-500">Trigonometri (rad)</span>
-                                        <span className="text-indigo-200">Terhitung</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {/* Tahap 3: Penyederhanaan Sesuai Operan */}
-                                <div className="space-y-1">
-                                  <p className="text-indigo-400/80 font-bold">3. Akumulasi Hasil Akhir:</p>
-                                  <div className="pl-3 text-slate-400 leading-relaxed italic">
-                                    Menjumlahkan seluruh suku yang telah dievaluasi dengan memperhatikan tanda (+, -, *, /)...
-                                  </div>
-                                  <div className="mt-2 p-2 bg-teal-500/10 rounded border border-teal-500/20">
-                                    <div className="flex justify-between items-baseline">
-                                      <span className="text-xs text-teal-400 font-bold">f(x_{selectedIter.iteration}) =</span>
-                                      <span className="text-sm font-mono text-teal-300 font-bold">{formatFullNumber(selectedIter.fx1, parseInt(precision))}</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-start gap-3">
-                            <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] text-indigo-300 shrink-0 mt-0.5">D</div>
-                            <div>
-                              <p className="text-slate-500 text-[9px] uppercase tracking-wider mb-1">Hasil Evaluasi & Rounding</p>
-                              <div className="flex flex-col gap-2">
-                                <span className="text-slate-400 italic">Mengevaluasi setiap suku dengan presisi {precision} desimal...</span>
-                                <div className="flex items-baseline gap-2">
-                                  <span className="text-teal-400 font-bold">f({formatFullNumber(selectedIter.x1, parseInt(precision))}) = {formatFullNumber(selectedIter.fx1, parseInt(precision))}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    {selectedIter.error >= parseFloat(tolerance) && (
+                      <DetailNextRoot 
+                        selectedIter={selectedIter} 
+                        precision={precision} 
+                      />
+                    )}
                   </div>
                 </div>
               )}
@@ -900,7 +988,7 @@ export default function App() {
                     <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">r</th>
                     <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">xr</th>
                     <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">f(xr)</th>
-                    <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500 text-right">|xr+1 - xr|</th>
+                    <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500 text-right">|xr - xr-1|</th>
                   </tr>
                 </thead>
                 <tbody className="text-sm font-mono divide-y divide-white/5">
@@ -923,10 +1011,10 @@ export default function App() {
                           )}
                         </td>
                         <td className="px-6 py-4 text-slate-100 font-medium">
-                          {formatFullNumber(r.x1, parseInt(precision))}
+                          {formatFullNumber(r.x, parseInt(precision))}
                         </td>
                         <td className="px-6 py-4 text-slate-400 italic">
-                          {formatFullNumber(r.fx1, parseInt(precision))}
+                          {formatFullNumber(r.fx, parseInt(precision))}
                         </td>
                         <td className="px-6 py-4 text-[10px] text-slate-500 text-right">
                           <div className="flex flex-col items-end gap-1">
@@ -934,9 +1022,9 @@ export default function App() {
                               "font-mono",
                               r.iteration > 0 && r.error < parseFloat(tolerance) ? "text-teal-400 font-bold" : ""
                             )}>
-                              {r.iteration === 0 ? "0.000000" : formatFullNumber(r.error, Math.max(8, parseInt(precision)))}
+                              {r.error === null ? "-" : formatFullNumber(r.error, Math.max(8, parseInt(precision)))}
                             </span>
-                            {r.iteration > 0 && (
+                            {r.iteration > 0 && r.error !== null && (
                               <div className="flex items-center gap-1.5 mt-1">
                                 <span className={cn(
                                   "px-1.5 py-0.5 rounded border text-[9px] font-bold",
